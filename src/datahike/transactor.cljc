@@ -1,5 +1,6 @@
 (ns datahike.transactor
   (:require [datahike.core :as d]
+            [datahike-client.api :as dc]
             [superv.async :refer [<?? <??- S thread-try]]
             [taoensso.timbre :as log]
             [clojure.core.async :refer [>!! chan close! promise-chan put!]]))
@@ -8,10 +9,11 @@
   ; Send a transaction. Returns a channel that resolves when the transaction finalizes.
   (send-transaction! [_ tx-data tx-fn])
   ; Returns a channel that resolves when the transactor has shut down.
-  (shutdown [_]))
+  (shutdown [_])
+  (streaming? [_]))
 
 (defrecord LocalTransactor
-           [rx-queue rx-thread]
+           [rx-queue rx-thread streaming?]
   PTransactor
   (send-transaction! [_ tx-data tx-fn]
     (let [p (promise-chan)]
@@ -20,7 +22,8 @@
 
   (shutdown [_]
     (close! rx-queue)
-    rx-thread))
+    rx-thread)
+  (streaming? [_] streaming?))
 
 (defn create-rx-thread
   [connection rx-queue update-and-flush-db]
@@ -46,9 +49,36 @@
     (or (:backend transactor-config) :local)))
 
 (defmethod create-transactor :local
-  [{:keys [rx-buffer-size]} connection update-and-flush-db]
+  [{:keys [rx-buffer-size streaming?]} connection update-and-flush-db]
   (let [rx-queue (chan rx-buffer-size)
         rx-thread (create-rx-thread connection rx-queue update-and-flush-db)]
     (map->LocalTransactor
      {:rx-queue  rx-queue
-      :rx-thread rx-thread})))
+      :rx-thread rx-thread
+      :streaming? (or streaming? false)})))
+
+
+;; datahike-server transactor
+
+(defrecord DatahikeServerTransactor [connection client client-config]
+  PTransactor
+  (send-transaction! [_ tx-data _]
+    (let [p (promise-chan)]
+      (log/debug "Sending transaction to datahike-server" client-config tx-data)
+      (put! p (dc/transact connection {:db-name (:db-name client-config)
+                                       :tx-data tx-data}))
+      p))
+  (shutdown [_]
+      ;; TODO shutdown client here
+    )
+  (streaming? [_] false))
+
+(defmethod create-transactor :datahike-server
+  [config _ _]
+  (log/debug "Creating datahike-server transactor for " config)
+  (let [client-config (:client-config config)
+        client (dc/client client-config)
+        connection (dc/connect client (:db-name client-config))]
+    (->DatahikeServerTransactor connection client client-config)))
+
+

@@ -15,9 +15,72 @@
             [clojure.spec.alpha :as s]
             [clojure.core.async :refer [go <!]]
             [clojure.core.cache :as cache])
-  (:import [java.net URI]))
+  (:import [java.net URI]
+           [clojure.lang IDeref IAtom IMeta]))
 
-(s/def ::connection #(instance? clojure.lang.Atom %))
+;; Conn
+
+(defn deref-db [conn]
+  (let [{:keys [wrapped-atom]} conn]
+    (if (not (t/streaming? (get-in @wrapped-atom [:transactor])))
+      (let [{:keys [eavt-key aevt-key avet-key
+                    temporal-eavt-key temporal-aevt-key temporal-avet-key
+                    schema rschema config max-tx op-count hash]
+             :or {op-count 0}}
+            (<?? S (k/get-in (:store @wrapped-atom) [:db]))]
+        (log/debug "Fetched db for deref.")
+        (swap! wrapped-atom assoc
+               :max-tx max-tx
+               :config config
+               :schema schema
+               :hash hash
+               :max-eid (db/init-max-eid eavt-key)
+               :op-count op-count
+               :eavt eavt-key
+               :aevt aevt-key
+               :avet avet-key
+               :temporal-eavt temporal-eavt-key
+               :temporal-aevt temporal-aevt-key
+               :temporal-avet temporal-avet-key
+               :rschema rschema))
+      @wrapped-atom)))
+
+(deftype Connection [wrapped-atom]
+  IDeref
+  (deref [conn] (deref-db conn))
+  ;; These interfaces should not be used from the outside
+  IAtom
+  (swap [_ f] (swap! wrapped-atom f))
+  (swap [_ f arg] (swap! wrapped-atom f arg))
+  (swap [_ f arg1 arg2] (swap! wrapped-atom f arg1 arg2))
+  (swap [_ f arg1 arg2 args] (apply swap! wrapped-atom f arg1 arg2 args))
+  (compareAndSet [_ oldv newv] (compare-and-set! wrapped-atom oldv newv))
+  (reset [_ newval] (reset! wrapped-atom newval))
+
+  IMeta
+  (meta [_] (meta wrapped-atom)))
+
+(defn conn-from-db
+  "Creates a mutable reference to a given immutable database. See [[create-conn]]."
+  [db]
+  (Connection. (atom db :meta {:listeners (atom {})})))
+
+(defn conn-from-datoms
+  "Creates an empty DB and a mutable reference to it. See [[create-conn]]."
+  ([datoms] (conn-from-db (d/init-db datoms)))
+  ([datoms schema] (conn-from-db (d/init-db datoms schema))))
+
+(defn create-conn
+  "Creates a mutable reference (a “connection”) to an empty immutable database.
+
+   Connections are lightweight in-memory structures (~atoms) with direct support of transaction listeners ([[listen!]], [[unlisten!]]) and other handy DataScript APIs ([[transact!]], [[reset-conn!]], [[db]]).
+
+   To access underlying immutable DB value, deref: `@conn`."
+  ([] (conn-from-db (d/empty-db)))
+  ([schema] (conn-from-db (d/empty-db schema))))
+
+(s/def ::connection #(instance? Connection %))
+
 
 (defn update-and-flush-db [connection tx-data update-fn]
   (let [{:keys [db-after] :as tx-report} @(update-fn connection tx-data)
@@ -147,29 +210,32 @@
               (ds/release-store store-config store)
               (dt/raise "Database does not exist." {:type :db-does-not-exist
                                                     :config config}))
-          {:keys [eavt-key aevt-key avet-key temporal-eavt-key temporal-aevt-key temporal-avet-key schema rschema config max-tx op-count hash]
+          {:keys [eavt-key aevt-key avet-key temporal-eavt-key temporal-aevt-key temporal-avet-key schema rschema max-tx op-count hash]
            :or {op-count 0}} stored-db
+          config (merge (:config stored-db) config)
           empty (db/empty-db nil config)
-          conn (d/conn-from-db (assoc empty
-                                      :max-tx max-tx
-                                      :config config
-                                      :schema schema
-                                      :hash hash
-                                      :max-eid (db/init-max-eid eavt-key)
-                                      :op-count op-count
-                                      :eavt eavt-key
-                                      :aevt aevt-key
-                                      :avet avet-key
-                                      :temporal-eavt temporal-eavt-key
-                                      :temporal-aevt temporal-aevt-key
-                                      :temporal-avet temporal-avet-key
-                                      :rschema rschema
-                                      :store store))]
+          conn (conn-from-db (assoc empty
+                                    :max-tx max-tx
+                                    :config config
+                                    :schema schema
+                                    :hash hash
+                                    :max-eid (db/init-max-eid eavt-key)
+                                    :op-count op-count
+                                    :eavt eavt-key
+                                    :aevt aevt-key
+                                    :avet avet-key
+                                    :temporal-eavt temporal-eavt-key
+                                    :temporal-aevt temporal-aevt-key
+                                    :temporal-avet temporal-avet-key
+                                    :rschema rschema
+                                    :store store))]
       (swap! conn assoc :transactor (t/create-transactor (:transactor config) conn update-and-flush-db))
       conn))
 
   (-create-database [config & deprecated-config]
-    (let [{:keys [keep-history? initial-tx] :as config} (dc/load-config config deprecated-config)
+    (let [{:keys [keep-history? initial-tx transactor] :as config} (dc/load-config config deprecated-config)
+          _ (when transactor
+              (dt/raise "Remote database management is not implemented yet. Create the database on the transactor directly." {:type :db-management-not-implemented-yet}))
           store-config (:store config)
           store (kc/ensure-cache
                  (ds/empty-store store-config)
@@ -202,6 +268,8 @@
 
   (-delete-database [config]
     (let [config (dc/load-config config {})]
+      (when (:transactor config)
+        (dt/raise "Remote database management is not implemented yet. Delete the database on the transactor directly." {:type :db-management-not-implemented-yet}))
       (ds/delete-store (:store config)))))
 
 (defn connect

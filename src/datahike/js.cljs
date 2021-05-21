@@ -110,7 +110,8 @@
 (defn ^:export create_conn [& [schema]]
   (d/create-conn (schema->clj schema)))
 
-(def ^:export conn_from_db d/conn-from-db)
+(comment
+  (def ^:export conn_from_db d/conn-from-db))
 
 (defn ^:export conn_from_datoms
   ([datoms]        (conn_from_db (init_db datoms)))

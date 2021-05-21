@@ -8,7 +8,9 @@
         io.replikativ/superv.async                  {:mvn/version "0.2.11"}
         io.lambdaforge/datalog-parser               {:mvn/version "0.1.8"}
         io.replikativ/zufall                        {:mvn/version "0.1.0"}
-        junit/junit                                 {:mvn/version "4.13.1"}}
+        junit/junit                                 {:mvn/version "4.13.1"}
+        io.replikativ/datahike-client               {:git/url "https://github.com/replikativ/datahike-client.git"
+                                                     :sha "662c07b68e238a07902ac9a5b9a576def165e3e6"}}
 
  :paths ["src" "target/classes"]
 
