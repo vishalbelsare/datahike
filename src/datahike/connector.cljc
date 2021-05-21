@@ -20,8 +20,26 @@
 
 ;; Conn
 
-(defn deref-db [conn]
-  (let [{:keys [wrapped-atom]} conn]
+(declare deref-db)
+
+(deftype Connection [wrapped-atom]
+  IDeref
+  (deref [conn] (deref-db conn))
+  ;; These interfaces should not be used from the outside, they are here to keep
+  ;; the internal interfaces lean and working.
+  IAtom
+  (swap [_ f] (swap! wrapped-atom f))
+  (swap [_ f arg] (swap! wrapped-atom f arg))
+  (swap [_ f arg1 arg2] (swap! wrapped-atom f arg1 arg2))
+  (swap [_ f arg1 arg2 args] (apply swap! wrapped-atom f arg1 arg2 args))
+  (compareAndSet [_ oldv newv] (compare-and-set! wrapped-atom oldv newv))
+  (reset [_ newval] (reset! wrapped-atom newval))
+
+  IMeta
+  (meta [_] (meta wrapped-atom)))
+
+(defn deref-db [^Connection conn]
+  (let [wrapped-atom (.-wrapped-atom conn)]
     (if (not (t/streaming? (get-in @wrapped-atom [:transactor])))
       (let [{:keys [eavt-key aevt-key avet-key
                     temporal-eavt-key temporal-aevt-key temporal-avet-key
@@ -44,21 +62,6 @@
                :temporal-avet temporal-avet-key
                :rschema rschema))
       @wrapped-atom)))
-
-(deftype Connection [wrapped-atom]
-  IDeref
-  (deref [conn] (deref-db conn))
-  ;; These interfaces should not be used from the outside
-  IAtom
-  (swap [_ f] (swap! wrapped-atom f))
-  (swap [_ f arg] (swap! wrapped-atom f arg))
-  (swap [_ f arg1 arg2] (swap! wrapped-atom f arg1 arg2))
-  (swap [_ f arg1 arg2 args] (apply swap! wrapped-atom f arg1 arg2 args))
-  (compareAndSet [_ oldv newv] (compare-and-set! wrapped-atom oldv newv))
-  (reset [_ newval] (reset! wrapped-atom newval))
-
-  IMeta
-  (meta [_] (meta wrapped-atom)))
 
 (defn conn-from-db
   "Creates a mutable reference to a given immutable database. See [[create-conn]]."
@@ -160,6 +163,10 @@
   (-delete-database [config])
   (-database-exists? [config]))
 
+(defn- remote-transactor? [config]
+  (and (:transactor config)
+       (not= (get-in config [:transactor :backend]) :local)))
+
 (extend-protocol IConfiguration
   String
   (-connect [uri]
@@ -233,8 +240,8 @@
       conn))
 
   (-create-database [config & deprecated-config]
-    (let [{:keys [keep-history? initial-tx transactor] :as config} (dc/load-config config deprecated-config)
-          _ (when transactor
+    (let [{:keys [keep-history? initial-tx] :as config} (dc/load-config config deprecated-config)
+          _ (when (remote-transactor? config)
               (dt/raise "Remote database management is not implemented yet. Create the database on the transactor directly." {:type :db-management-not-implemented-yet}))
           store-config (:store config)
           store (kc/ensure-cache
@@ -268,7 +275,7 @@
 
   (-delete-database [config]
     (let [config (dc/load-config config {})]
-      (when (:transactor config)
+      (when (remote-transactor? config)
         (dt/raise "Remote database management is not implemented yet. Delete the database on the transactor directly." {:type :db-management-not-implemented-yet}))
       (ds/delete-store (:store config)))))
 

@@ -55,7 +55,7 @@
     (map->LocalTransactor
      {:rx-queue  rx-queue
       :rx-thread rx-thread
-      :streaming? (or streaming? false)})))
+      :streaming? (if (nil? streaming?) true streaming?)})))
 
 
 ;; datahike-server transactor
