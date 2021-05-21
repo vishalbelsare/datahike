@@ -199,7 +199,7 @@
   [conn]
   (and #?(:clj  (instance? clojure.lang.IDeref conn)
           :cljs (satisfies? cljs.core/IDeref conn))
-       (db/db? @conn)))
+       (db/db? @(:wrapped-atom conn))))
 
 (defn ^:no-doc -transact! [conn tx-data tx-meta]
   {:pre [(conn? conn)]}

@@ -16,7 +16,7 @@
             [clojure.core.async :refer [go <!]]
             [clojure.core.cache :as cache])
   (:import [java.net URI]
-           [clojure.lang IDeref IAtom IMeta]))
+           [clojure.lang IDeref IAtom IMeta ILookup]))
 
 ;; Conn
 
@@ -27,6 +27,9 @@
   (deref [conn] (deref-db conn))
   ;; These interfaces should not be used from the outside, they are here to keep
   ;; the internal interfaces lean and working.
+  ILookup
+  (valAt [c k] (if (= k :wrapped-atom)
+                 wrapped-atom nil))
   IAtom
   (swap [_ f] (swap! wrapped-atom f))
   (swap [_ f arg] (swap! wrapped-atom f arg))
