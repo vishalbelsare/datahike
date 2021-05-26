@@ -116,29 +116,17 @@
                                                "Timo" "Wade"])]))]
           (time
            (doseq [txs (partition (read-string (nth args 2)) tx-data)]
-             (api/transact conn txs)
-             #_(if (= :file (get-in cfg [:store :backend]))
-                 (let [file-name (str (get-in cfg [:store :path]) "/0594e3b6-9635-5c99-8142-412accf3023b.ksv")
-                       path (Paths/get file-name (into-array String []))
-                       ac (AsynchronousFileChannel/open
-                           path
-                           (into-array StandardOpenOption
-                                       [StandardOpenOption/WRITE
-                                        StandardOpenOption/CREATE]))
-                       ^FileLockImpl lock   (.get (.lock ac))]
-                   (println "Locked: " file-name)
-                   (try
-                     (api/transact conn txs)
-                     (finally
-                       (.release ^FileLockImpl lock)
-                       (println "Unlocked: " file-name))))
-                 (api/transact conn txs)))))
+             (when (:verbosity options)
+               (log/info "Transacting batch of size " (count txs)))
+             (api/transact conn txs))))
 
         :query
-        (let [q-args (doall (map
-                             #(if (.startsWith ^String % "db:") ;; TODO better db denotation
-                                @(connect (read-config %)) (read-string %))
-                             (rest arguments)))
+        (let [q-args (mapv
+                      #(if (.startsWith ^String % "db:") ;; TODO better db denotation
+                         @(connect (read-config %)) (read-string %))
+                      (rest arguments))
+              _ (when (:verbosity options)
+                  (log/info "Parsed query arguments:" (pr-str q-args)))
               out (apply api/q (read-string (first arguments))
                          q-args)]
           (println
