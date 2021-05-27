@@ -1,14 +1,21 @@
 (ns datahike.cli
   (:gen-class)
   (:require [clojure.data.json :as json]
+            [clojure.java.io :as io]
+            [clojure.pprint :refer [pprint]]
             [clojure.string :as str]
             [clojure.tools.cli :refer [parse-opts]]
             [datahike.api :as api]
-            [taoensso.timbre :as log])
-  (:import [java.nio.channels AsynchronousFileChannel]
-           [java.nio.file Paths StandardOpenOption]
-           [sun.nio.ch FileLockImpl]))
+            [taoensso.timbre :as log]
 
+            ;; hh-tree benchmark
+            [konserve.filestore :refer [new-fs-store delete-store]]
+            [hitchhiker.tree.bootstrap.konserve :as kons]
+            [konserve.cache :as kc]
+            [hitchhiker.tree :as core]
+            [hitchhiker.tree.utils.async :as ha]
+            [hitchhiker.tree.messaging :as msg]
+            [clojure.core.async :as async]))
 
 ;; This file is following https://github.com/clojure/tools.cli
 
@@ -24,6 +31,7 @@
         "  transact                Transact transactions in second argument into db configuration provided as path in first argument."
         "  query                   Query the database provided as first argument with provided query and an arbitrary number of arguments pointing to db configuration files or denoting values."
         "  benchmark               Benchmark transacts into db config provided by first argument. The following arguments are starting eid, ending eid and the batch partitioning of the added synthetic Datoms. The Datoms have the form [eid :name ?random-name]"
+        "  hbenchmark              Benchmark writes to a single hitchhiker-tree using the store path of the first argument. The following arguments are starting eid, ending eid and the batch partitioning of the added synthetic Datoms. The final two arguments are branching factor of tree (e.g. 32) and node size (e.g. 1024)."
         ""
         "Please refer to the manual page for more information."]
        (str/join \newline)))
@@ -32,15 +40,18 @@
   (str "The following errors occurred while parsing your command:\n\n"
        (str/join \newline errors)))
 
-(def actions #{"transact" "query" "benchmark"})
+(def actions #{"transact" "query" "benchmark" "hbenchmark"})
 
 (def cli-options
   ;; An option with a required argument
-  (let [formats #{:json :edn :pretty-json}]
-    [["-f" "--format FORMAT" "Output format"
+  (let [formats #{:json :edn :pretty-json :pprint}]
+    [["-f" "--format FORMAT" "Output format for the result."
       :default :edn
       :parse-fn keyword
       :validate [formats (str "Must be one of: " (str/join ", " formats))]]
+     [nil "--tx-file PATH" "Use this input file for transactions."
+      :default nil
+      :validate [#(.exists (io/file %)) "Transaction file does not exist."]]
      ;; A non-idempotent option (:default is applied first)
      ["-v" nil "Verbosity level"
       :id :verbosity
@@ -61,6 +72,11 @@
 
       errors          ; errors => exit with description of errors
       {:exit-message (error-msg errors) :options options}
+
+      (and (not= "transact" (first arguments))
+           (:tx-file options))
+      {:exit-message "The option --tx-file is only applicable to the transact action."
+       :options options}
 
       (actions (first arguments))
       {:action (keyword (first arguments)) :options options
@@ -85,13 +101,31 @@
 
 (defn connect [cfg]
   (when-not (api/database-exists? cfg)
-    (try (api/create-database cfg)
-         (log/info "Created database:" (get-in cfg [:store :path]))
-         (catch Exception _)))
+    (api/create-database cfg)
+    (log/info "Created database:" (get-in cfg [:store :path])))
   (api/connect cfg))
 
+(defn hbenchmark [folder data branching node-size]
+  (let [_ (delete-store folder)
+        store (kons/add-hitchhiker-tree-handlers
+               (kc/ensure-cache (async/<!! (new-fs-store folder))))
+        backend (kons/->KonserveBackend store)
+        op-count (atom 0)]
+    (doseq [d data]
+      (time
+       (ha/<?? (core/flush-tree
+                (reduce (fn [t i]
+                          (ha/<?? (msg/insert t i nil (swap! op-count inc))))
+                        (ha/<?? (core/b-tree (core/->Config branching
+                                                            node-size
+                                                            (- node-size branching))))
+                        d)
+
+                backend))))))
+
 (defn -main [& args]
-  (let [{:keys [action options arguments exit-message ok?]} (validate-args args)]
+  (let [{:keys [action options arguments exit-message ok?]}
+        (validate-args args)]
     (if (pos? (:verbosity options))
       (log/set-level! :debug)
       (log/set-level! :warn))
@@ -101,7 +135,12 @@
       (case action
         :transact
         (api/transact (connect (read-config (first arguments)))
-                      (read-string (second arguments)))
+                      (vec ;; TODO support set inputs for transact
+                       (if-let [tf (:tx-file options)]
+                         (read-string (slurp tf))
+                         (if-let [s (second arguments)]
+                           (read-string s)
+                           (read)))))
 
         :benchmark
         (let [cfg (read-config (first arguments))
@@ -114,18 +153,30 @@
                                                "Jiayi" "Judith"
                                                "Konrad" "Pablo"
                                                "Timo" "Wade"])]))]
-          (time
-           (doseq [txs (partition (read-string (nth args 2)) tx-data)]
-             (when (:verbosity options)
-               (log/info "Transacting batch of size " (count txs)))
+          (doseq [txs (partition (read-string (nth args 2)) tx-data)]
+            (time
              (api/transact conn txs))))
+
+        :hbenchmark
+        (let [args (rest arguments)
+              tx-data (vec (for [i (range (read-string (first args))
+                                          (read-string (second args)))]
+                             [:db/add (inc i)
+                              :name (rand-nth ["Chrislain" "Christian"
+                                               "Jiayi" "Judith"
+                                               "Konrad" "Pablo"
+                                               "Timo" "Wade"])]))]
+          (hbenchmark (first arguments)
+                      (partition (read-string (nth args 2)) tx-data)
+                      (read-string (nth args 3))
+                      (read-string (nth args 4))))
 
         :query
         (let [q-args (mapv
                       #(if (.startsWith ^String % "db:") ;; TODO better db denotation
                          @(connect (read-config %)) (read-string %))
                       (rest arguments))
-              _ (when (:verbosity options)
+              _ (when (pos? (:verbosity options))
                   (log/info "Parsed query arguments:" (pr-str q-args)))
               out (apply api/q (read-string (first arguments))
                          q-args)]
@@ -133,5 +184,6 @@
            (case (:format options)
              :json (json/json-str out)
              :pretty-json (with-out-str (json/pprint out))
-             :edn  (pr-str out))))))))
+             :edn (pr-str out)
+             :pprint (with-out-str (pprint out)))))))))
 
