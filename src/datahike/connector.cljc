@@ -100,7 +100,7 @@
                             schema rschema max-tx op-count hash]
                      :or {op-count 0}} stored-db
                     empty (db/empty-db nil)
-                    conn (d/conn-from-db
+                    conn (conn-from-db
                           (assoc empty
                                  :max-tx max-tx
                                  :config config
@@ -117,8 +117,9 @@
                                  :rschema rschema
                                  :store store))
                     _ (swap! conn assoc :transactor
-                             (t/create-transactor (:transactor config)
-                                                  conn update-and-flush-db))
+                             (or (:transactor @connection)
+                                 (t/create-transactor (:transactor config)
+                                                      conn update-and-flush-db)))
 
                     {:keys [db-after] :as tx-report} @(update-fn conn tx-data)
                     {:keys [eavt aevt avet

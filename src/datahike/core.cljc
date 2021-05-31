@@ -194,6 +194,7 @@
 
 ;; conn
 
+
 (defn conn?
   "Returns `true` if this is a connection to a DataScript db, `false` otherwise."
   [conn]
@@ -226,8 +227,6 @@
      (doseq [[_ callback] (some-> (:listeners (meta conn)) (deref))]
        (callback report))
      report)))
-
-
 
 (defn reset-conn!
   "Forces underlying `conn` value to become `db`. Will generate a tx-report that will remove everything from old value and insert everything from the new one."
