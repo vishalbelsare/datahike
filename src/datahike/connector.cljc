@@ -10,7 +10,7 @@
             [hitchhiker.tree.bootstrap.konserve :as kons]
             [konserve.core :as k]
             [konserve.cache :as kc]
-            [superv.async :refer [<?? S]]
+            [superv.async :refer [go-try- <??- <?-]]
             [taoensso.timbre :as log]
             [clojure.spec.alpha :as s]
             [clojure.core.async :refer [go <!]]
@@ -48,7 +48,7 @@
                     temporal-eavt-key temporal-aevt-key temporal-avet-key
                     schema rschema config max-tx op-count hash]
              :or {op-count 0}}
-            (<?? S (k/get-in (:store @wrapped-atom) [:db]))]
+            (<??- (k/get-in (:store @wrapped-atom) [:db]))]
         (log/debug "Fetched db for deref.")
         (swap! wrapped-atom assoc
                :max-tx max-tx
@@ -89,84 +89,81 @@
 
 (defn update-and-flush-db [connection tx-data update-fn]
   (let [report (atom nil)
-        store (:store @connection)]
-    (<?? S (k/update-in
-            store [:db]
-            (fn [stored-db]
-              (let [;; reconnect
-                    config (:config @connection) ;; keep our config
-                    {:keys [eavt-key aevt-key avet-key
-                            temporal-eavt-key temporal-aevt-key temporal-avet-key
-                            schema rschema max-tx op-count hash]
-                     :or {op-count 0}} stored-db
-                    empty (db/empty-db nil)
-                    conn (conn-from-db
-                          (assoc empty
-                                 :max-tx max-tx
-                                 :config config
-                                 :schema schema
-                                 :hash hash
-                                 :max-eid (db/init-max-eid eavt-key)
-                                 :op-count op-count
-                                 :eavt eavt-key
-                                 :aevt aevt-key
-                                 :avet avet-key
-                                 :temporal-eavt temporal-eavt-key
-                                 :temporal-aevt temporal-aevt-key
-                                 :temporal-avet temporal-avet-key
-                                 :rschema rschema
-                                 :store store))
-                    _ (swap! conn assoc :transactor
-                             (or (:transactor @connection)
-                                 (t/create-transactor (:transactor config)
-                                                      conn update-and-flush-db)))
-
-                    {:keys [db-after] :as tx-report} @(update-fn conn tx-data)
-                    {:keys [eavt aevt avet
-                            temporal-eavt temporal-aevt temporal-avet
-                            schema rschema config max-tx op-count hash]} db-after
-                    _ (reset! report tx-report)
-                    backend (kons/->KonserveBackend store)
-                    eavt-flushed (di/-flush eavt backend)
-                    aevt-flushed (di/-flush aevt backend)
-                    avet-flushed (di/-flush avet backend)
-                    keep-history? (:keep-history? config)
-                    temporal-eavt-flushed (when keep-history?
-                                            (di/-flush temporal-eavt backend))
-                    temporal-aevt-flushed (when keep-history?
-                                            (di/-flush temporal-aevt backend))
-                    temporal-avet-flushed (when keep-history?
-                                            (di/-flush temporal-avet backend))]
-                (reset! connection (assoc db-after
-                                          :eavt eavt-flushed
-                                          :aevt aevt-flushed
-                                          :avet avet-flushed
-                                          :temporal-eavt temporal-eavt-flushed
-                                          :temporal-aevt temporal-aevt-flushed
-                                          :temporal-avet temporal-avet-flushed))
-                (merge
-                 {:schema   schema
-                  :rschema  rschema
-                  :config   config
-                  :hash hash
-                  :max-tx max-tx
-                  :op-count op-count
-                  :eavt-key eavt-flushed
-                  :aevt-key aevt-flushed
-                  :avet-key avet-flushed}
-                 (when keep-history?
-                   {:temporal-eavt-key temporal-eavt-flushed
-                    :temporal-aevt-key temporal-aevt-flushed
-                    :temporal-avet-key temporal-avet-flushed}))))))
-
-    @report))
+        ;; runtime state to retain from current connection
+        {:keys [store config transactor]} @(:wrapped-atom connection)]
+    (go-try-
+     (<?-
+      (k/update-in
+       store [:db]
+       (fn [stored-db]
+         (let [;; reconnect
+               {:keys [eavt-key aevt-key avet-key
+                       temporal-eavt-key temporal-aevt-key temporal-avet-key
+                       schema rschema max-tx op-count hash]
+                :or {op-count 0}} stored-db
+               empty (db/empty-db nil)
+               conn (conn-from-db
+                     (assoc empty
+                            :max-tx max-tx
+                            :config config
+                            :schema schema
+                            :hash hash
+                            :max-eid (db/init-max-eid eavt-key)
+                            :op-count op-count
+                            :eavt eavt-key
+                            :aevt aevt-key
+                            :avet avet-key
+                            :temporal-eavt temporal-eavt-key
+                            :temporal-aevt temporal-aevt-key
+                            :temporal-avet temporal-avet-key
+                            :rschema rschema
+                            :store store
+                            :transactor transactor))
+               {:keys [db-after] :as tx-report} @(update-fn conn tx-data)
+               {:keys [eavt aevt avet
+                       temporal-eavt temporal-aevt temporal-avet
+                       schema rschema config max-tx op-count hash]} db-after
+               _ (reset! report tx-report)
+               backend (kons/->KonserveBackend store)
+               eavt-flushed (di/-flush eavt backend)
+               aevt-flushed (di/-flush aevt backend)
+               avet-flushed (di/-flush avet backend)
+               keep-history? (:keep-history? config)
+               temporal-eavt-flushed (when keep-history?
+                                       (di/-flush temporal-eavt backend))
+               temporal-aevt-flushed (when keep-history?
+                                       (di/-flush temporal-aevt backend))
+               temporal-avet-flushed (when keep-history?
+                                       (di/-flush temporal-avet backend))]
+           (reset! connection (assoc db-after
+                                     :eavt eavt-flushed
+                                     :aevt aevt-flushed
+                                     :avet avet-flushed
+                                     :temporal-eavt temporal-eavt-flushed
+                                     :temporal-aevt temporal-aevt-flushed
+                                     :temporal-avet temporal-avet-flushed))
+           (merge
+            {:schema   schema
+             :rschema  rschema
+             :config   config
+             :hash hash
+             :max-tx max-tx
+             :op-count op-count
+             :eavt-key eavt-flushed
+             :aevt-key aevt-flushed
+             :avet-key avet-flushed}
+            (when keep-history?
+              {:temporal-eavt-key temporal-eavt-flushed
+               :temporal-aevt-key temporal-aevt-flushed
+               :temporal-avet-key temporal-avet-flushed}))))))
+     @report)))
 
 (defn transact!
   [connection {:keys [tx-data]}]
   {:pre [(d/conn? connection)]}
   (let [p (throwable-promise)]
     (go
-      (let [tx-report (<! (t/send-transaction! (:transactor @connection)
+      (let [tx-report (<! (t/send-transaction! (:transactor @(:wrapped-atom connection))
                                                tx-data 'datahike.core/transact))]
         (deliver p tx-report)))
     p))
@@ -189,13 +186,14 @@
 (defn load-entities [connection entities]
   (let [p (throwable-promise)]
     (go
-      (let [tx-report (<! (t/send-transaction! (:transactor @connection) entities 'datahike.core/load-entities))]
+      (let [tx-report (<! (t/send-transaction! (:transactor @(:wrapped-atom connection)) entities 'datahike.core/load-entities))]
         (deliver p tx-report)))
     p))
 
 (defn release [connection]
-  (<?? S (t/shutdown (:transactor @connection)))
-  (ds/release-store (get-in @connection [:config :store]) (:store @connection)))
+  (<??- (t/shutdown (:transactor @(:wrapped-atom connection))))
+  (ds/release-store (get-in @(:wrapped-atom connection)
+                            [:config :store]) (:store @connection)))
 
 ;; deprecation begin
 (defprotocol IConfiguration
@@ -233,7 +231,7 @@
                       (kc/ensure-cache
                        raw-store
                        (atom (cache/lru-cache-factory {} :threshold 1000)))))
-              stored-db (<?? S (k/get-in store [:db]))]
+              stored-db (<??- (k/get-in store [:db]))]
           (ds/release-store store-config store)
           (not (nil? stored-db)))
         (do
@@ -253,7 +251,7 @@
                   (kc/ensure-cache
                    raw-store
                    (atom (cache/lru-cache-factory {} :threshold 1000)))))
-          stored-db (<?? S (k/get-in store [:db]))
+          stored-db (<??- (k/get-in store [:db]))
           _ (when-not stored-db
               (ds/release-store store-config store)
               (dt/raise "Database does not exist." {:type :db-does-not-exist
@@ -292,7 +290,7 @@
           store (kc/ensure-cache
                  (ds/empty-store store-config)
                  (atom (cache/lru-cache-factory {} :threshold 1000)))
-          stored-db (<?? S (k/get-in store [:db]))
+          stored-db (<??- (k/get-in store [:db]))
           _ (when stored-db
               (dt/raise "Database already exists." {:type :db-already-exists :config store-config}))
           {:keys [eavt aevt avet
@@ -300,20 +298,20 @@
                   schema rschema config max-tx op-count hash]}
           (db/empty-db nil config)
           backend (kons/->KonserveBackend store)]
-      (<?? S (k/assoc-in store [:db]
-                         (merge {:schema   schema
-                                 :max-tx max-tx
-                                 :op-count op-count
-                                 :hash hash
-                                 :rschema  rschema
-                                 :config   config
-                                 :eavt-key (di/-flush eavt backend)
-                                 :aevt-key (di/-flush aevt backend)
-                                 :avet-key (di/-flush avet backend)}
-                                (when keep-history?
-                                  {:temporal-eavt-key (di/-flush temporal-eavt backend)
-                                   :temporal-aevt-key (di/-flush temporal-aevt backend)
-                                   :temporal-avet-key (di/-flush temporal-avet backend)}))))
+      (<??- (k/assoc-in store [:db]
+                        (merge {:schema   schema
+                                :max-tx max-tx
+                                :op-count op-count
+                                :hash hash
+                                :rschema  rschema
+                                :config   config
+                                :eavt-key (di/-flush eavt backend)
+                                :aevt-key (di/-flush aevt backend)
+                                :avet-key (di/-flush avet backend)}
+                               (when keep-history?
+                                 {:temporal-eavt-key (di/-flush temporal-eavt backend)
+                                  :temporal-aevt-key (di/-flush temporal-aevt backend)
+                                  :temporal-avet-key (di/-flush temporal-avet backend)}))))
       (ds/release-store store-config store)
       (when initial-tx
         (let [conn (-connect config)]
