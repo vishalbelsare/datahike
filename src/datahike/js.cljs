@@ -3,6 +3,7 @@
   (:require
    [goog.object :as go]
    [datahike.core :as d]
+   [datahike.connector :as dc]
    [clojure.walk :as walk]
    [cljs.reader]))
 
@@ -108,7 +109,7 @@
 (def ^:export is_filtered d/is-filtered)
 
 (defn ^:export create_conn [& [schema]]
-  (d/create-conn (schema->clj schema)))
+  (dc/create-conn (schema->clj schema)))
 
 (comment
   (def ^:export conn_from_db d/conn-from-db))
