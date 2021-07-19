@@ -13,6 +13,7 @@
    [datahike.schema :as ds]
    [datahike.lru :refer [lru-datom-cache-factory]]
    [me.tonsky.persistent-sorted-set.arrays :as arrays]
+   [hitchhiker.tree.key-compare :as kc]
    [datahike.config :as dc]
    [environ.core :refer [env]]
    [clojure.spec.alpha :as s]
@@ -367,25 +368,53 @@
   (-index-range [db attr start end]
                 (filter (.-pred db) (-index-range (.-unfiltered-db db) attr start end))))
 
+
+(defn multi-comp
+  "Based on https://clojuredocs.org/clojure.core/sort#example-58e81eb1e4b01f4add58fe88"
+  ([fns a b]
+   (multi-comp fns < a b))
+  ([[f & others :as fns] order a b]
+   (if (seq fns)
+     (let [result (kc/-compare (f a) (f b))
+           f-result (if (= order >) (* -1 result) result)]
+       (if (= 0 f-result)
+         (recur others order a b)
+         f-result))
+     0)))
+
+(defn concat-sort [list-a list-b index-type]
+  (letfn [(index-type->order [it]
+            (case it
+              :eavt [:e :a :v :tx :added]
+              :aevt [:a :e :v :tx :added]
+              :avet [:a :v :e :tx :added]
+              [:e :a :v :tx :added]))]
+    (->> (concat list-a list-b)
+         (sort #(multi-comp (index-type->order index-type) < %1 %2))
+         distinct
+         vec)))
+
 (defn temporal-search [^DB db pattern]
-  (concat (search-current-indices db pattern)
-          (search-temporal-indices db pattern)))
+  (concat-sort (search-current-indices db pattern)
+               (search-temporal-indices db pattern) :eavt))
 
 (defn temporal-datoms [^DB db index-type cs]
   (let [index (get db index-type)
         temporal-index (get db (keyword (str "temporal-" (name index-type))))
         from (components->pattern db index-type cs e0 tx0)
         to (components->pattern db index-type cs emax txmax)]
-    (concat (-slice index from to index-type)
-            (-slice temporal-index from to index-type))))
+    (concat-sort (-slice index from to index-type)
+                 (-slice temporal-index from to index-type)
+                 index-type)))
 
 (defn temporal-seek-datoms [^DB db index-type cs]
   (let [index (get db index-type)
         temporal-index (get db (keyword (str "temporal-" (name index-type))))
         from (components->pattern db index-type cs e0 tx0)
         to (datom emax nil nil txmax)]
-    (concat (-slice index from to index-type)
-            (-slice temporal-index from to index-type))))
+    (concat-sort (-slice index from to index-type)
+                 (-slice temporal-index from to index-type)
+                 index-type)))
 
 (defn temporal-rseek-datoms [^DB db index-type cs]
   (let [index (get db index-type)
@@ -393,8 +422,9 @@
         from (components->pattern db index-type cs e0 tx0)
         to (datom emax nil nil txmax)]
     (concat
-     (-> (concat (-slice index from to index-type)
-                 (-slice temporal-index from to index-type))
+     (-> (concat-sort (-slice index from to index-type)
+                      (-slice temporal-index from to index-type)
+                      index-type)
          vec
          rseq))))
 
@@ -404,9 +434,10 @@
   (validate-attr attr (list '-index-range 'db attr start end) db)
   (let [from (resolve-datom current-db nil attr start nil e0 tx0)
         to (resolve-datom current-db nil attr end nil emax txmax)]
-    (concat
+    (concat-sort
      (-slice (get db :avet) from to :avet)
-     (-slice (get db :temporal-avet) from to :avet))))
+     (-slice (get db :temporal-avet) from to :avet)
+     :avet)))
 
 (defrecord-updatable HistoricalDB [origin-db]
   #?@(:cljs
