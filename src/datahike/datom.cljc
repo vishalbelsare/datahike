@@ -103,7 +103,9 @@
 (defn- equiv-datom [^Datom d ^Datom o]
   (and (== (.-e d) (.-e o))
        (= (.-a d) (.-a o))
-       (= (.-v d) (.-v o))))
+       (= (.-v d) (.-v o))
+       (= (.-tx d) (.-tx o))
+       (= (datom-added d) (datom-added o))))
 
 (defn- seq-datom [^Datom d]
   (list (.-e d) (.-a d) (.-v d) (datom-tx d) (datom-added d)))
