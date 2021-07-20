@@ -368,7 +368,6 @@
   (-index-range [db attr start end]
                 (filter (.-pred db) (-index-range (.-unfiltered-db db) attr start end))))
 
-
 (defn multi-comp
   "Based on https://clojuredocs.org/clojure.core/sort#example-58e81eb1e4b01f4add58fe88"
   ([fns a b]
