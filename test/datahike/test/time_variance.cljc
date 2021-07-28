@@ -289,3 +289,41 @@
                   (remove (fn [[e _ _ _]]
                             (< const/tx0 e)))
                   vec))))))
+
+
+(deftest test-no-duplicates-on-history-search
+  (let [schema [{:db/ident       :name
+                 :db/cardinality :db.cardinality/one
+                 :db/index       true
+                 :db/unique      :db.unique/identity
+                 :db/valueType   :db.type/string}
+                {:db/ident       :sibling
+                 :db/cardinality :db.cardinality/many
+                 :db/valueType   :db.type/ref}
+                {:db/ident       :age
+                 :db/cardinality :db.cardinality/one
+                 :db/valueType   :db.type/long}]
+        cfg {:store {:backend :mem :id "sandbox"}
+             :keep-history? true
+             :schema-flexibility :write
+             :attribute-refs? false}
+        conn (do
+               (d/delete-database cfg)
+               (d/create-database cfg)
+               (d/connect cfg))]
+
+    (d/transact conn schema)
+    (d/transact conn [{:name "Alice"
+                       :age  25}
+                      {:name    "Charlie"
+                       :age     45
+                       :sibling [{:name "Alice"} {:name "Bob"}]}])
+
+    (is (= 2 (count (d/datoms (d/history @conn) :eavt [:name "Alice"] :name "Alice"))))
+    (is (= 1 (count (filter :added (d/datoms (d/history @conn) :eavt [:name "Alice"] :name "Alice")))))
+
+    (d/release conn)
+    (d/delete-database cfg)))
+;; => #'datahike.test.time-variance/test-no-duplicates-with-cardinality-many
+
+

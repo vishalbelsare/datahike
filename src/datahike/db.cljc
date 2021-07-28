@@ -381,17 +381,25 @@
          f-result))
      0)))
 
+(defn merge-sorted
+  "Returns lazy sequence of distinct sorted values from both sorted lists of distinct values"
+  ([comp list-a list-b]
+   (if (or (empty? list-a) (empty? list-b))
+     (concat list-a list-b)
+     (let [c (comp (first list-a) (first list-b))]
+       (if (neg? c)
+         (cons (first list-a) (lazy-seq (merge-sorted comp (rest list-a) list-b)))
+         (if (zero? c)
+           (cons (first list-a) (lazy-seq (merge-sorted comp (rest list-a) (rest list-b))))
+           (cons (first list-b) (lazy-seq (merge-sorted comp list-a (rest list-b))))))))))
+
 (defn concat-sort [list-a list-b index-type]
-  (letfn [(index-type->order [it]
-            (case it
-              :eavt [:e :a :v :tx :added]
-              :aevt [:a :e :v :tx :added]
-              :avet [:a :v :e :tx :added]
-              [:e :a :v :tx :added]))]
-    (->> (concat list-a list-b)
-         (sort #(multi-comp (index-type->order index-type) < %1 %2))
-         distinct
-         vec)))
+  (let [order (case index-type
+                :eavt [:e :a :v :tx :added]
+                :aevt [:a :e :v :tx :added]
+                :avet [:a :v :e :tx :added]
+                [:e :a :v :tx :added])]
+    (vec (merge-sorted #(multi-comp order < %1 %2) list-a list-b))))
 
 (defn temporal-search [^DB db pattern]
   (concat-sort (search-current-indices db pattern)
